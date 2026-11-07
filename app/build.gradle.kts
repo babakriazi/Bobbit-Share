@@ -12,8 +12,8 @@ android {
         applicationId = "com.babakriazi.bobbitshare"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -68,9 +68,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // QR Code generate + scan
+    // QR Code generate only
     implementation("com.google.zxing:core:3.5.3")
-    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // Lightweight HTTP server
     implementation("org.nanohttpd:nanohttpd:2.3.1")
