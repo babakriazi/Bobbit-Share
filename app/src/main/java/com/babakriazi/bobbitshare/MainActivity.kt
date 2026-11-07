@@ -9,8 +9,11 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.OpenableColumns
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -19,14 +22,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,7 +40,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -49,30 +49,35 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.babakriazi.bobbitshare.ui.rememberQrImageBitmap
 import com.babakriazi.bobbitshare.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
 class MainActivity : ComponentActivity() {
 
     private var shareService: ShareService? = null
     private var bound = false
+    private var serviceReadyCallback: (() -> Unit)? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as ShareService.LocalBinder
             shareService = binder.getService()
             bound = true
+            Log.d(TAG, "Service connected")
+            serviceReadyCallback?.invoke()
+            serviceReadyCallback = null
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             shareService = null
             bound = false
+            Log.d(TAG, "Service disconnected")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Request notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
@@ -81,6 +86,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Pre-bind the service
+        bindShareService()
+
         setContent {
             BobbitShareTheme {
                 Surface(
@@ -88,9 +96,8 @@ class MainActivity : ComponentActivity() {
                     color = Background
                 ) {
                     ShareScreen(
-                        onBindService = { bindShareService() },
-                        onUnbindService = { unbindShareService() },
-                        getService = { shareService }
+                        getService = { shareService },
+                        ensureService = { onReady -> ensureServiceBound(onReady) }
                     )
                 }
             }
@@ -99,35 +106,56 @@ class MainActivity : ComponentActivity() {
 
     private fun bindShareService() {
         val intent = Intent(this, ShareService::class.java)
+        // Start as foreground-capable service first so it survives
+        try {
+            ContextCompat.startForegroundService(this, intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService failed (ok if already running)", e)
+        }
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
-    private fun unbindShareService() {
-        if (bound) {
-            unbindService(connection)
-            bound = false
+    private fun ensureServiceBound(onReady: () -> Unit) {
+        if (bound && shareService != null) {
+            onReady()
+        } else {
+            serviceReadyCallback = onReady
+            bindShareService()
+            // Fallback timeout
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (shareService != null) {
+                    serviceReadyCallback?.invoke()
+                    serviceReadyCallback = null
+                } else {
+                    Toast.makeText(this, "سرویس آماده نشد. دوباره تلاش کنید", Toast.LENGTH_SHORT).show()
+                }
+            }, 1500)
         }
     }
 
     override fun onDestroy() {
-        unbindShareService()
+        if (bound) {
+            try { unbindService(connection) } catch (_: Exception) {}
+            bound = false
+        }
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ShareScreen(
-    onBindService: () -> Unit,
-    onUnbindService: () -> Unit,
-    getService: () -> ShareService?
+    getService: () -> ShareService?,
+    ensureService: (onReady: () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val configuration = LocalConfiguration.current
-    val density = LocalDensity.current
 
-    // Responsive sizing based on screen
     val screenWidth = configuration.screenWidthDp.dp
     val isCompact = screenWidth < 360.dp
     val qrSize = when {
@@ -142,6 +170,8 @@ fun ShareScreen(
     var isSharing by remember { mutableStateOf(false) }
     var serverUrl by remember { mutableStateOf<String?>(null) }
     var clientCount by remember { mutableStateOf(0) }
+    var isStarting by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     // File picker
     val filePicker = rememberLauncherForActivityResult(
@@ -154,48 +184,101 @@ fun ShareScreen(
                         uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION
                     )
+                } catch (_: SecurityException) {
+                    // Some providers don't support persistable permission – still usable in this session
                 } catch (_: Exception) {}
 
                 var name = "file"
                 var size = 0L
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (cursor.moveToFirst()) {
-                        if (nameIndex >= 0) name = cursor.getString(nameIndex) ?: "file"
-                        if (sizeIndex >= 0) size = cursor.getLong(sizeIndex)
+                try {
+                    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (cursor.moveToFirst()) {
+                            if (nameIndex >= 0) name = cursor.getString(nameIndex) ?: "file"
+                            if (sizeIndex >= 0) size = cursor.getLong(sizeIndex)
+                        }
                     }
-                }
-                val mime = context.contentResolver.getType(uri)
+                } catch (_: Exception) {}
+
+                val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
                 FileItem(uri, name, size, mime)
             }
             selectedFiles = items
+            errorMessage = null
         }
     }
 
-    // Observe service state
+    // Continuously observe service state when available
     LaunchedEffect(Unit) {
-        onBindService()
-    }
-
-    LaunchedEffect(isSharing) {
-        val service = getService()
-        if (service != null) {
-            service.isRunning.collectLatest { isSharing = it }
+        while (true) {
+            val service = getService()
+            if (service != null) {
+                // Collect all flows
+                launch {
+                    service.isRunning.collectLatest { running ->
+                        isSharing = running
+                        if (running) isStarting = false
+                    }
+                }
+                launch {
+                    service.serverUrl.collectLatest { url ->
+                        serverUrl = url
+                    }
+                }
+                launch {
+                    service.clientCount.collectLatest { count ->
+                        clientCount = count
+                    }
+                }
+                launch {
+                    service.lastError.collectLatest { err ->
+                        if (err != null) {
+                            errorMessage = err
+                            isStarting = false
+                        }
+                    }
+                }
+                break // once we have service, stay collecting
+            }
+            delay(300)
         }
     }
 
-    LaunchedEffect(isSharing) {
-        val service = getService()
-        if (service != null) {
-            service.serverUrl.collectLatest { serverUrl = it }
+    fun startShare() {
+        if (selectedFiles.isEmpty()) {
+            Toast.makeText(context, "ابتدا فایل انتخاب کنید", Toast.LENGTH_SHORT).show()
+            return
         }
-    }
 
-    LaunchedEffect(isSharing) {
-        val service = getService()
-        if (service != null) {
-            service.clientCount.collectLatest { clientCount = it }
+        errorMessage = null
+        isStarting = true
+
+        ensureService {
+            val service = getService()
+            if (service == null) {
+                isStarting = false
+                errorMessage = "سرویس آماده نشد"
+                Toast.makeText(context, "سرویس آماده نشد. دوباره تلاش کنید", Toast.LENGTH_SHORT).show()
+                return@ensureService
+            }
+
+            val ip = NetworkUtils.getLocalIpAddress(context)
+            if (ip == null) {
+                isStarting = false
+                errorMessage = "آدرس IP پیدا نشد. به وای‌فای وصل باشید"
+                Toast.makeText(context, errorMessage, Toast.LENGTH_LONG).show()
+                return@ensureService
+            }
+
+            val started = service.startSharing(selectedFiles)
+            if (!started) {
+                isStarting = false
+                val err = service.lastError.value ?: "خطا در راه‌اندازی سرور"
+                errorMessage = err
+                Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+            }
+            // If started successfully, isSharing will become true via the flow
         }
     }
 
@@ -206,7 +289,7 @@ fun ShareScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // ── Header with graphical logo ──
+        // Header
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -227,16 +310,35 @@ fun ShareScreen(
         }
 
         Text(
-            text = "اشتراک‌گذاری سریع فایل در شبکه محلی",
+            text = "اشتراک‌گذاری سریع فایل در شبکه محلی  •  v1.0.1",
             color = TextSecondary,
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 20.dp),
+                .padding(bottom = 16.dp),
             textAlign = TextAlign.Center
         )
 
-        // ── Main content ──
+        // Error banner
+        if (errorMessage != null) {
+            Surface(
+                color = Error.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = horizontalPadding)
+                    .padding(bottom = 12.dp)
+            ) {
+                Text(
+                    text = errorMessage!!,
+                    color = Error,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(12.dp),
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
         AnimatedContent(
             targetState = isSharing,
             transitionSpec = {
@@ -246,35 +348,27 @@ fun ShareScreen(
             label = "main_content"
         ) { sharing ->
             if (!sharing) {
-                // ── Selection Mode ──
+                // Selection Mode
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = horizontalPadding)
                 ) {
-                    // Select files button
                     Button(
                         onClick = { filePicker.launch(arrayOf("*/*")) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
                         shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Primary
-                        )
+                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
                     ) {
                         Icon(Icons.Rounded.FolderOpen, contentDescription = null)
                         Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = "انتخاب فایل‌ها",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Text("انتخاب فایل‌ها", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                     }
 
                     Spacer(Modifier.height(20.dp))
 
-                    // File list
                     if (selectedFiles.isEmpty()) {
                         Box(
                             modifier = Modifier
@@ -290,11 +384,7 @@ fun ShareScreen(
                                     modifier = Modifier.size(64.dp)
                                 )
                                 Spacer(Modifier.height(12.dp))
-                                Text(
-                                    text = "هنوز فایلی انتخاب نشده",
-                                    color = TextSecondary,
-                                    fontSize = 15.sp
-                                )
+                                Text("هنوز فایلی انتخاب نشده", color = TextSecondary, fontSize = 15.sp)
                             }
                         }
                     } else {
@@ -315,36 +405,11 @@ fun ShareScreen(
                         }
                     }
 
-                    // Start button
                     Spacer(Modifier.height(16.dp))
+
                     Button(
-                        onClick = {
-                            if (selectedFiles.isEmpty()) {
-                                Toast.makeText(context, "ابتدا فایل انتخاب کنید", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            if (!NetworkUtils.isWifiConnected(context)) {
-                                Toast.makeText(context, "به وای‌فای وصل باشید", Toast.LENGTH_LONG).show()
-                                return@Button
-                            }
-                            val service = getService()
-                            if (service != null) {
-                                val started = service.startSharing(selectedFiles)
-                                if (!started) {
-                                    Toast.makeText(context, "خطا در راه‌اندازی سرور", Toast.LENGTH_SHORT).show()
-                                }
-                            } else {
-                                // Start service first
-                                val intent = Intent(context, ShareService::class.java)
-                                ContextCompat.startForegroundService(context, intent)
-                                onBindService()
-                                // Retry shortly
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    getService()?.startSharing(selectedFiles)
-                                }, 400)
-                            }
-                        },
-                        enabled = selectedFiles.isNotEmpty(),
+                        onClick = { startShare() },
+                        enabled = selectedFiles.isNotEmpty() && !isStarting,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
@@ -355,25 +420,30 @@ fun ShareScreen(
                             disabledContainerColor = SurfaceVariant
                         )
                     ) {
-                        Icon(Icons.Rounded.Share, contentDescription = null)
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = "شروع اشتراک‌گذاری",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        if (isStarting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = Color.Black,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("در حال راه‌اندازی…", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Rounded.Share, contentDescription = null)
+                            Spacer(Modifier.width(10.dp))
+                            Text("شروع اشتراک‌گذاری", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                     Spacer(Modifier.height(12.dp))
                 }
             } else {
-                // ── Sharing Mode ──
+                // Sharing Mode
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = horizontalPadding),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Status chip
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = Success.copy(alpha = 0.15f),
@@ -399,7 +469,6 @@ fun ShareScreen(
                         }
                     }
 
-                    // QR Code
                     if (serverUrl != null) {
                         val qrBitmap = rememberQrImageBitmap(serverUrl!!, 512)
                         Box(
@@ -429,7 +498,6 @@ fun ShareScreen(
 
                         Spacer(Modifier.height(12.dp))
 
-                        // URL box
                         Surface(
                             shape = RoundedCornerShape(14.dp),
                             color = SurfaceVariant,
@@ -461,11 +529,14 @@ fun ShareScreen(
                                 )
                             }
                         }
+                    } else {
+                        CircularProgressIndicator(color = Primary)
+                        Spacer(Modifier.height(12.dp))
+                        Text("در حال آماده‌سازی…", color = TextSecondary)
                     }
 
                     Spacer(Modifier.weight(1f))
 
-                    // File count info
                     Text(
                         text = "${selectedFiles.size} فایل در حال اشتراک‌گذاری",
                         color = TextSecondary,
@@ -473,11 +544,8 @@ fun ShareScreen(
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
 
-                    // Stop button
                     Button(
-                        onClick = {
-                            getService()?.stopSharing()
-                        },
+                        onClick = { getService()?.stopSharing() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
@@ -488,11 +556,7 @@ fun ShareScreen(
                     ) {
                         Icon(Icons.Rounded.Stop, contentDescription = null)
                         Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = "توقف اشتراک‌گذاری",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("توقف اشتراک‌گذاری", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
                     Spacer(Modifier.height(12.dp))
                 }
