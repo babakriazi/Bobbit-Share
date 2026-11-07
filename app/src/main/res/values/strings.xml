@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bobbit Share</string>
+    <string name="select_files">انتخاب فایل‌ها</string>
+    <string name="start_sharing">شروع اشتراک‌گذاری</string>
+    <string name="stop_sharing">توقف اشتراک‌گذاری</string>
+    <string name="no_files_selected">هنوز فایلی انتخاب نشده</string>
+    <string name="files_selected">%1$d فایل انتخاب شده</string>
+    <string name="scan_qr">این QR را با گوشی دیگر اسکن کنید\nیا آدرس زیر را در مرورگر وارد کنید</string>
+    <string name="waiting_for_connection">در انتظار اتصال…</string>
+    <string name="clients_connected">%1$d نفر متصل</string>
+    <string name="copy_url">کپی آدرس</string>
+    <string name="url_copied">آدرس کپی شد</string>
+    <string name="permission_needed">برای اشتراک‌گذاری نیاز به دسترسی فایل داریم</string>
+    <string name="service_running">در حال اشتراک‌گذاری فایل‌ها</string>
+    <string name="service_notification_title">Bobbit Share</string>
+    <string name="service_notification_text">فایل‌ها در حال اشتراک‌گذاری هستند</string>
+</resources>
