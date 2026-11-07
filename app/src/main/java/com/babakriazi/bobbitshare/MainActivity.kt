@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
         bindShareService()
         setContent {
             BobbitShareTheme {
-                Surface(Modifier = Modifier.fillMaxSize(), color = Background) {
+                Box(modifier = Modifier.fillMaxSize().background(Background)) {
                     ShareScreen(
                         getService = { shareService },
                         ensureService = { onReady -> ensureServiceBound(onReady) }
