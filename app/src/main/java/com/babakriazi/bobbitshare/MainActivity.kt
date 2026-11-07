@@ -62,7 +62,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.babakriazi.bobbitshare.ui.rememberQrImageBitmap
 import com.babakriazi.bobbitshare.ui.theme.*
-import com.google.zxing.integration.android.IntentIntegrator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -89,29 +88,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private var onQrResult: ((String) -> Unit)? = null
-
-    private val qrLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val intentResult = IntentIntegrator.parseActivityResult(result.resultCode, result.data)
-        if (intentResult != null && intentResult.contents != null) {
-            onQrResult?.invoke(intentResult.contents)
-        }
-    }
-
-    fun launchQrScanner(onResult: (String) -> Unit) {
-        onQrResult = onResult
-        val integrator = IntentIntegrator(this)
-        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-        integrator.setPrompt("QR کد دستگاه مقابل را اسکن کنید")
-        integrator.setCameraId(0)
-        integrator.setBeepEnabled(true)
-        integrator.setBarcodeImageEnabled(false)
-        integrator.setOrientationLocked(true)
-        qrLauncher.launch(integrator.createScanIntent())
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -130,8 +106,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = Background) {
                     AppRoot(
                         getService = { shareService },
-                        ensureService = { onReady -> ensureServiceBound(onReady) },
-                        launchQr = { cb -> launchQrScanner(cb) }
+                        ensureService = { onReady -> ensureServiceBound(onReady) }
                     )
                 }
             }
@@ -181,15 +156,13 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppRoot(
     getService: () -> ShareService?,
-    ensureService: (onReady: () -> Unit) -> Unit,
-    launchQr: ((String) -> Unit) -> Unit
+    ensureService: (onReady: () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
     var showExitDialog by remember { mutableStateOf(false) }
     var lastBackTime by remember { mutableLongStateOf(0L) }
 
-    // Double-back to exit with confirmation
     BackHandler {
         val now = System.currentTimeMillis()
         if (now - lastBackTime < 2000) {
@@ -206,24 +179,19 @@ fun AppRoot(
             title = { Text("خروج از برنامه", fontWeight = FontWeight.Bold) },
             text = { Text("می‌خواهید از Bobbit Share خارج شوید؟") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        showExitDialog = false
-                        (context as? ComponentActivity)?.finishAffinity()
-                    }
-                ) { Text("خروج", color = Error) }
+                TextButton(onClick = {
+                    showExitDialog = false
+                    (context as? ComponentActivity)?.finishAffinity()
+                }) { Text("خروج", color = Error) }
             },
             dismissButton = {
-                TextButton(onClick = { showExitDialog = false }) {
-                    Text("انصراف")
-                }
+                TextButton(onClick = { showExitDialog = false }) { Text("انصراف") }
             },
             containerColor = Surface
         )
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Background).statusBarsPadding()) {
-        // Header
         Box(
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
             contentAlignment = Alignment.Center
@@ -240,14 +208,13 @@ fun AppRoot(
         }
 
         Text(
-            text = "v1.1.0",
+            text = "v1.1.1",
             color = TextSecondary,
             fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             textAlign = TextAlign.Center
         )
 
-        // Tabs
         TabRow(
             selectedTabIndex = selectedTab,
             containerColor = Background,
@@ -258,19 +225,19 @@ fun AppRoot(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
                 text = { Text("ارسال", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) },
-                icon = { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(20.dp)) }
+                icon = { Icon(Icons.Rounded.Upload, null, modifier = Modifier.size(20.dp)) }
             )
             Tab(
                 selected = selectedTab == 1,
                 onClick = { selectedTab = 1 },
                 text = { Text("دریافت", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) },
-                icon = { Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(20.dp)) }
+                icon = { Icon(Icons.Rounded.Download, null, modifier = Modifier.size(20.dp)) }
             )
         }
 
         when (selectedTab) {
             0 -> SendScreen(getService = getService, ensureService = ensureService)
-            1 -> ReceiveScreen(launchQr = launchQr)
+            1 -> ReceiveScreen()
         }
     }
 }
@@ -518,7 +485,7 @@ fun SendScreen(
 
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "QR را اسکن کنید یا آدرس را وارد کنید",
+                            "QR را اسکن کنید یا آدرس را کپی کنید",
                             color = TextSecondary, fontSize = 13.sp, textAlign = TextAlign.Center
                         )
                         Spacer(Modifier.height(10.dp))
@@ -570,9 +537,10 @@ fun SendScreen(
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
+fun ReceiveScreen() {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val clipboard = LocalClipboardManager.current
     val configuration = LocalConfiguration.current
     val horizontalPadding = if (configuration.screenWidthDp < 360) 16.dp else 24.dp
 
@@ -610,7 +578,6 @@ fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
         Spacer(Modifier.height(12.dp))
 
         if (loadedUrl == null) {
-            // Connect form
             Text(
                 "به دستگاه مقابل وصل شوید",
                 color = TextPrimary,
@@ -619,45 +586,18 @@ fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
                 modifier = Modifier.padding(bottom = 6.dp)
             )
             Text(
-                "QR طرف مقابل را اسکن کنید یا آدرس را دستی وارد کنید",
+                "آدرس نمایش‌داده‌شده روی گوشی فرستنده را وارد کنید\n(مثلاً http://192.168.1.42:8080)",
                 color = TextSecondary,
                 fontSize = 13.sp,
-                modifier = Modifier.padding(bottom = 16.dp)
+                modifier = Modifier.padding(bottom = 16.dp),
+                lineHeight = 18.sp
             )
-
-            // Scan QR button
-            Button(
-                onClick = {
-                    launchQr { content ->
-                        // Accept full URL or raw IP:port
-                        urlInput = content
-                        connect(content)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Primary)
-            ) {
-                Icon(Icons.Rounded.QrCodeScanner, null)
-                Spacer(Modifier.width(10.dp))
-                Text("اسکن QR کد", fontWeight = FontWeight.SemiBold)
-            }
-
-            Spacer(Modifier.height(16.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                HorizontalDivider(modifier = Modifier.weight(1f), color = SurfaceVariant)
-                Text(" یا ", color = TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 10.dp))
-                HorizontalDivider(modifier = Modifier.weight(1f), color = SurfaceVariant)
-            }
-
-            Spacer(modifier.height(16.dp))
 
             OutlinedTextField(
                 value = urlInput,
                 onValueChange = { urlInput = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("مثلاً 192.168.1.42:8080", color = TextSecondary) },
+                placeholder = { Text("192.168.1.42:8080", color = TextSecondary) },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -676,10 +616,37 @@ fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
                 keyboardActions = KeyboardActions(onGo = { connect(urlInput) }),
                 leadingIcon = {
                     Icon(Icons.Rounded.Link, null, tint = TextSecondary)
+                },
+                trailingIcon = {
+                    if (urlInput.isNotEmpty()) {
+                        IconButton(onClick = { urlInput = "" }) {
+                            Icon(Icons.Rounded.Close, null, tint = TextSecondary)
+                        }
+                    }
                 }
             )
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
+
+            // Paste from clipboard
+            TextButton(
+                onClick = {
+                    val text = clipboard.getText()?.text?.trim()
+                    if (!text.isNullOrEmpty()) {
+                        urlInput = text
+                        Toast.makeText(context, "از کلیپ‌بورد جایگذاری شد", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "کلیپ‌بورد خالی است", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Icon(Icons.Rounded.ContentPaste, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("جایگذاری از کلیپ‌بورد")
+            }
+
+            Spacer(Modifier.height(8.dp))
 
             Button(
                 onClick = { connect(urlInput) },
@@ -706,7 +673,6 @@ fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
                 lineHeight = 18.sp
             )
         } else {
-            // WebView mode
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -762,15 +728,7 @@ fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 request: WebResourceRequest?
-                            ): Boolean {
-                                // Let downloads happen via system
-                                val url = request?.url?.toString() ?: return false
-                                if (url.contains("/download/")) {
-                                    // Trigger download via system download manager or just allow
-                                    return false
-                                }
-                                return false
-                            }
+                            ): Boolean = false
 
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 isLoading = false
@@ -790,7 +748,7 @@ fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
                                 request.setMimeType(mimeType)
                                 val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
                                 request.setTitle(fileName)
-                                request.setDescription("در حال دانلود از Bobbit Share")
+                                request.setDescription("دانلود از Bobbit Share")
                                 request.setNotificationVisibility(
                                     android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                                 )
