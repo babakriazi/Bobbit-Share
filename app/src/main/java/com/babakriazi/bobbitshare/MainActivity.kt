@@ -1,6 +1,7 @@
 package com.babakriazi.bobbitshare
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -14,8 +15,14 @@ import android.os.IBinder
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Log
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,6 +34,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -40,15 +49,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.babakriazi.bobbitshare.ui.rememberQrImageBitmap
 import com.babakriazi.bobbitshare.ui.theme.*
+import com.google.zxing.integration.android.IntentIntegrator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -72,8 +86,30 @@ class MainActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             shareService = null
             bound = false
-            Log.d(TAG, "Service disconnected")
         }
+    }
+
+    private var onQrResult: ((String) -> Unit)? = null
+
+    private val qrLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val intentResult = IntentIntegrator.parseActivityResult(result.resultCode, result.data)
+        if (intentResult != null && intentResult.contents != null) {
+            onQrResult?.invoke(intentResult.contents)
+        }
+    }
+
+    fun launchQrScanner(onResult: (String) -> Unit) {
+        onQrResult = onResult
+        val integrator = IntentIntegrator(this)
+        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+        integrator.setPrompt("QR کد دستگاه مقابل را اسکن کنید")
+        integrator.setCameraId(0)
+        integrator.setBeepEnabled(true)
+        integrator.setBarcodeImageEnabled(false)
+        integrator.setOrientationLocked(true)
+        qrLauncher.launch(integrator.createScanIntent())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,13 +127,11 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BobbitShareTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = Background
-                ) {
-                    ShareScreen(
+                Surface(modifier = Modifier.fillMaxSize(), color = Background) {
+                    AppRoot(
                         getService = { shareService },
-                        ensureService = { onReady -> ensureServiceBound(onReady) }
+                        ensureService = { onReady -> ensureServiceBound(onReady) },
+                        launchQr = { cb -> launchQrScanner(cb) }
                     )
                 }
             }
@@ -109,7 +143,7 @@ class MainActivity : ComponentActivity() {
         try {
             ContextCompat.startForegroundService(this, intent)
         } catch (e: Exception) {
-            Log.w(TAG, "startForegroundService failed (ok if already running)", e)
+            Log.w(TAG, "startForegroundService", e)
         }
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
@@ -144,9 +178,106 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable
+fun AppRoot(
+    getService: () -> ShareService?,
+    ensureService: (onReady: () -> Unit) -> Unit,
+    launchQr: ((String) -> Unit) -> Unit
+) {
+    val context = LocalContext.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+    var showExitDialog by remember { mutableStateOf(false) }
+    var lastBackTime by remember { mutableLongStateOf(0L) }
+
+    // Double-back to exit with confirmation
+    BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackTime < 2000) {
+            showExitDialog = true
+        } else {
+            lastBackTime = now
+            Toast.makeText(context, "برای خروج دوباره دکمه بازگشت را بزنید", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("خروج از برنامه", fontWeight = FontWeight.Bold) },
+            text = { Text("می‌خواهید از Bobbit Share خارج شوید؟") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showExitDialog = false
+                        (context as? ComponentActivity)?.finishAffinity()
+                    }
+                ) { Text("خروج", color = Error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitDialog = false }) {
+                    Text("انصراف")
+                }
+            },
+            containerColor = Surface
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(Background).statusBarsPadding()) {
+        // Header
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Bobbit Share",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = (-0.5).sp,
+                style = LocalTextStyle.current.copy(
+                    brush = Brush.linearGradient(listOf(GradientStart, GradientEnd))
+                )
+            )
+        }
+
+        Text(
+            text = "v1.1.0",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            textAlign = TextAlign.Center
+        )
+
+        // Tabs
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = Background,
+            contentColor = PrimaryLight,
+            divider = {}
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("ارسال", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) },
+                icon = { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(20.dp)) }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("دریافت", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) },
+                icon = { Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(20.dp)) }
+            )
+        }
+
+        when (selectedTab) {
+            0 -> SendScreen(getService = getService, ensureService = ensureService)
+            1 -> ReceiveScreen(launchQr = launchQr)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ShareScreen(
+fun SendScreen(
     getService: () -> ShareService?,
     ensureService: (onReady: () -> Unit) -> Unit
 ) {
@@ -157,11 +288,10 @@ fun ShareScreen(
     val screenWidth = configuration.screenWidthDp.dp
     val isCompact = screenWidth < 360.dp
     val qrSize = when {
-        screenWidth < 340.dp -> 200.dp
-        screenWidth < 400.dp -> 240.dp
-        else -> 280.dp
+        screenWidth < 340.dp -> 180.dp
+        screenWidth < 400.dp -> 220.dp
+        else -> 260.dp
     }
-    val titleSize = if (isCompact) 26.sp else 32.sp
     val horizontalPadding = if (isCompact) 16.dp else 24.dp
 
     var selectedFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
@@ -178,10 +308,8 @@ fun ShareScreen(
             val items = uris.mapNotNull { uri ->
                 try {
                     context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
                     )
-                } catch (_: SecurityException) {
                 } catch (_: Exception) {}
 
                 var name = "file"
@@ -196,7 +324,6 @@ fun ShareScreen(
                         }
                     }
                 } catch (_: Exception) {}
-
                 val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
                 FileItem(uri, name, size, mime)
             }
@@ -209,24 +336,12 @@ fun ShareScreen(
         while (true) {
             val service = getService()
             if (service != null) {
-                launch {
-                    service.isRunning.collectLatest { running ->
-                        isSharing = running
-                        if (running) isStarting = false
-                    }
-                }
-                launch {
-                    service.serverUrl.collectLatest { url -> serverUrl = url }
-                }
-                launch {
-                    service.clientCount.collectLatest { count -> clientCount = count }
-                }
+                launch { service.isRunning.collectLatest { isSharing = it; if (it) isStarting = false } }
+                launch { service.serverUrl.collectLatest { serverUrl = it } }
+                launch { service.clientCount.collectLatest { clientCount = it } }
                 launch {
                     service.lastError.collectLatest { err ->
-                        if (err != null) {
-                            errorMessage = err
-                            isStarting = false
-                        }
+                        if (err != null) { errorMessage = err; isStarting = false }
                     }
                 }
                 break
@@ -240,19 +355,15 @@ fun ShareScreen(
             Toast.makeText(context, "ابتدا فایل انتخاب کنید", Toast.LENGTH_SHORT).show()
             return
         }
-
         errorMessage = null
         isStarting = true
-
         ensureService {
             val service = getService()
             if (service == null) {
                 isStarting = false
                 errorMessage = "سرویس آماده نشد"
-                Toast.makeText(context, "سرویس آماده نشد. دوباره تلاش کنید", Toast.LENGTH_SHORT).show()
                 return@ensureService
             }
-
             val ip = NetworkUtils.getLocalIpAddress(context)
             if (ip == null) {
                 isStarting = false
@@ -260,13 +371,11 @@ fun ShareScreen(
                 Toast.makeText(context, errorMessage, Toast.LENGTH_LONG).show()
                 return@ensureService
             }
-
             val started = service.startSharing(selectedFiles)
             if (!started) {
                 isStarting = false
-                val err = service.lastError.value ?: "خطا در راه‌اندازی سرور"
-                errorMessage = err
-                Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                errorMessage = service.lastError.value ?: "خطا در راه‌اندازی سرور"
+                Toast.makeText(context, errorMessage, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -274,43 +383,14 @@ fun ShareScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Background)
-            .statusBarsPadding()
             .navigationBarsPadding()
+            .padding(horizontal = horizontalPadding)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 20.dp, bottom = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Bobbit Share",
-                fontSize = titleSize,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = (-0.5).sp,
-                style = LocalTextStyle.current.copy(
-                    brush = Brush.linearGradient(colors = listOf(GradientStart, GradientEnd))
-                )
-            )
-        }
-
-        Text(
-            text = "اشتراک‌گذاری سریع فایل در شبکه محلی  •  v1.0.1",
-            color = TextSecondary,
-            fontSize = 12.sp,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            textAlign = TextAlign.Center
-        )
-
         if (errorMessage != null) {
             Surface(
                 color = Error.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = horizontalPadding)
-                    .padding(bottom = 12.dp)
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
             ) {
                 Text(
                     text = errorMessage!!,
@@ -328,68 +408,59 @@ fun ShareScreen(
                 fadeIn() + slideInVertically { it / 4 } togetherWith
                         fadeOut() + slideOutVertically { -it / 4 }
             },
-            label = "main_content"
+            label = "send"
         ) { sharing ->
             if (!sharing) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = horizontalPadding)
-                ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = { filePicker.launch(arrayOf("*/*")) },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Primary)
                     ) {
-                        Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+                        Icon(Icons.Rounded.FolderOpen, null)
                         Spacer(Modifier.width(10.dp))
-                        Text("انتخاب فایل‌ها", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                        Text("انتخاب فایل‌ها", fontWeight = FontWeight.SemiBold)
                     }
 
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(16.dp))
 
                     if (selectedFiles.isEmpty()) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                            contentAlignment = Alignment.Center
-                        ) {
+                        Box(Modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
-                                    Icons.Rounded.InsertDriveFile,
-                                    contentDescription = null,
-                                    tint = TextSecondary.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(64.dp)
+                                    Icons.Rounded.InsertDriveFile, null,
+                                    tint = TextSecondary.copy(alpha = 0.35f),
+                                    modifier = Modifier.size(56.dp)
                                 )
-                                Spacer(Modifier.height(12.dp))
-                                Text("هنوز فایلی انتخاب نشده", color = TextSecondary, fontSize = 15.sp)
+                                Spacer(Modifier.height(10.dp))
+                                Text("فایلی انتخاب نشده", color = TextSecondary, fontSize = 14.sp)
                             }
                         }
                     } else {
                         Text(
-                            text = "${selectedFiles.size} فایل انتخاب شده",
+                            "${selectedFiles.size} فایل انتخاب شده",
                             color = TextSecondary,
                             fontSize = 13.sp,
-                            modifier = Modifier.padding(bottom = 10.dp)
+                            modifier = Modifier.padding(bottom = 8.dp)
                         )
-
                         LazyColumn(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(selectedFiles, key = { it.uri.toString() }) { file ->
-                                FileRow(file = file, compact = isCompact)
+                                FileRow(file, isCompact)
                             }
                         }
                     }
 
-                    Spacer(Modifier.height(16.dp))
-
+                    Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = { startShare() },
                         enabled = selectedFiles.isNotEmpty() && !isStarting,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Secondary,
                             contentColor = Color.Black,
@@ -397,139 +468,98 @@ fun ShareScreen(
                         )
                     ) {
                         if (isStarting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                color = Color.Black,
-                                strokeWidth = 2.dp
-                            )
+                            CircularProgressIndicator(Modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
-                            Text("در حال راه‌اندازی…", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("در حال راه‌اندازی…", fontWeight = FontWeight.Bold)
                         } else {
-                            Icon(Icons.Rounded.Share, contentDescription = null)
+                            Icon(Icons.Rounded.Share, null)
                             Spacer(Modifier.width(10.dp))
-                            Text("شروع اشتراک‌گذاری", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("شروع اشتراک‌گذاری", fontWeight = FontWeight.Bold)
                         }
                     }
                     Spacer(Modifier.height(12.dp))
                 }
             } else {
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = horizontalPadding),
+                    modifier = Modifier.fillMaxSize(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    Spacer(Modifier.height(8.dp))
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = Success.copy(alpha = 0.15f),
-                        modifier = Modifier.padding(bottom = 16.dp)
+                        color = Success.copy(alpha = 0.15f)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .background(Success)
-                            )
+                            Box(Modifier = Modifier.size(8.dp).clip(RoundedCornerShape(50)).background(Success))
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = if (clientCount > 0) "$clientCount نفر متصل" else "در انتظار اتصال…",
-                                color = Success,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
+                                if (clientCount > 0) "$clientCount نفر متصل" else "در انتظار اتصال…",
+                                color = Success, fontSize = 13.sp, fontWeight = FontWeight.Medium
                             )
                         }
                     }
+
+                    Spacer(Modifier.height(16.dp))
 
                     if (serverUrl != null) {
                         val qrBitmap = rememberQrImageBitmap(serverUrl!!, 512)
                         Box(
                             modifier = Modifier
                                 .size(qrSize)
-                                .clip(RoundedCornerShape(20.dp))
+                                .clip(RoundedCornerShape(18.dp))
                                 .background(Color.White)
-                                .padding(12.dp)
+                                .padding(10.dp)
                         ) {
-                            Image(
-                                bitmap = qrBitmap,
-                                contentDescription = "QR Code",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Fit
-                            )
+                            Image(qrBitmap, "QR", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
                         }
 
-                        Spacer(Modifier.height(16.dp))
-
-                        Text(
-                            text = "این QR را اسکن کنید\nیا آدرس را در مرورگر وارد کنید",
-                            color = TextSecondary,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 20.sp
-                        )
-
                         Spacer(Modifier.height(12.dp))
+                        Text(
+                            "QR را اسکن کنید یا آدرس را وارد کنید",
+                            color = TextSecondary, fontSize = 13.sp, textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(10.dp))
 
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(12.dp),
                             color = SurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    clipboard.setText(AnnotatedString(serverUrl!!))
-                                    Toast.makeText(context, "آدرس کپی شد", Toast.LENGTH_SHORT).show()
-                                }
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                clipboard.setText(AnnotatedString(serverUrl!!))
+                                Toast.makeText(context, "آدرس کپی شد", Toast.LENGTH_SHORT).show()
+                            }
                         ) {
                             Row(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = serverUrl!!,
-                                    color = PrimaryLight,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    serverUrl!!, color = PrimaryLight, fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis
                                 )
-                                Icon(
-                                    Icons.Rounded.ContentCopy,
-                                    contentDescription = "کپی",
-                                    tint = TextSecondary,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                Icon(Icons.Rounded.ContentCopy, "کپی", tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
                         }
-                    } else {
-                        CircularProgressIndicator(color = Primary)
-                        Spacer(Modifier.height(12.dp))
-                        Text("در حال آماده‌سازی…", color = TextSecondary)
                     }
 
                     Spacer(Modifier.weight(1f))
-
                     Text(
-                        text = "${selectedFiles.size} فایل در حال اشتراک‌گذاری",
-                        color = TextSecondary,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(bottom = 12.dp)
+                        "${selectedFiles.size} فایل در حال اشتراک‌گذاری",
+                        color = TextSecondary, fontSize = 13.sp,
+                        modifier = Modifier.padding(bottom = 10.dp)
                     )
-
                     Button(
                         onClick = { getService()?.stopSharing() },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Error.copy(alpha = 0.9f)
-                        )
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Error.copy(alpha = 0.9f))
                     ) {
-                        Icon(Icons.Rounded.Stop, contentDescription = null)
+                        Icon(Icons.Rounded.Stop, null)
                         Spacer(Modifier.width(10.dp))
-                        Text("توقف اشتراک‌گذاری", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text("توقف اشتراک‌گذاری", fontWeight = FontWeight.Bold)
                     }
                     Spacer(Modifier.height(12.dp))
                 }
@@ -538,38 +568,285 @@ fun ShareScreen(
     }
 }
 
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun ReceiveScreen(launchQr: ((String) -> Unit) -> Unit) {
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val configuration = LocalConfiguration.current
+    val horizontalPadding = if (configuration.screenWidthDp < 360) 16.dp else 24.dp
+
+    var urlInput by remember { mutableStateOf("") }
+    var loadedUrl by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var pageTitle by remember { mutableStateOf("") }
+
+    fun normalizeUrl(raw: String): String {
+        var u = raw.trim()
+        if (u.isEmpty()) return u
+        if (!u.startsWith("http://") && !u.startsWith("https://")) {
+            u = "http://$u"
+        }
+        return u
+    }
+
+    fun connect(url: String) {
+        val normalized = normalizeUrl(url)
+        if (normalized.isEmpty()) {
+            Toast.makeText(context, "آدرس را وارد کنید", Toast.LENGTH_SHORT).show()
+            return
+        }
+        loadedUrl = normalized
+        isLoading = true
+        focusManager.clearFocus()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(horizontal = horizontalPadding)
+    ) {
+        Spacer(Modifier.height(12.dp))
+
+        if (loadedUrl == null) {
+            // Connect form
+            Text(
+                "به دستگاه مقابل وصل شوید",
+                color = TextPrimary,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+            Text(
+                "QR طرف مقابل را اسکن کنید یا آدرس را دستی وارد کنید",
+                color = TextSecondary,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            // Scan QR button
+            Button(
+                onClick = {
+                    launchQr { content ->
+                        // Accept full URL or raw IP:port
+                        urlInput = content
+                        connect(content)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Primary)
+            ) {
+                Icon(Icons.Rounded.QrCodeScanner, null)
+                Spacer(Modifier.width(10.dp))
+                Text("اسکن QR کد", fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                HorizontalDivider(modifier = Modifier.weight(1f), color = SurfaceVariant)
+                Text(" یا ", color = TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 10.dp))
+                HorizontalDivider(modifier = Modifier.weight(1f), color = SurfaceVariant)
+            }
+
+            Spacer(modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = urlInput,
+                onValueChange = { urlInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("مثلاً 192.168.1.42:8080", color = TextSecondary) },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Primary,
+                    unfocusedBorderColor = SurfaceVariant,
+                    focusedContainerColor = Surface,
+                    unfocusedContainerColor = Surface,
+                    cursorColor = PrimaryLight,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary
+                ),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Go
+                ),
+                keyboardActions = KeyboardActions(onGo = { connect(urlInput) }),
+                leadingIcon = {
+                    Icon(Icons.Rounded.Link, null, tint = TextSecondary)
+                }
+            )
+
+            Spacer(Modifier.height(14.dp))
+
+            Button(
+                onClick = { connect(urlInput) },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Secondary,
+                    contentColor = Color.Black
+                )
+            ) {
+                Icon(Icons.Rounded.Link, null)
+                Spacer(Modifier.width(10.dp))
+                Text("اتصال", fontWeight = FontWeight.Bold)
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            Text(
+                "هر دو دستگاه باید به یک وای‌فای وصل باشند.\nبعد از اتصال می‌توانید فایل‌ها را دانلود کنید.",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                lineHeight = 18.sp
+            )
+        } else {
+            // WebView mode
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = {
+                    loadedUrl = null
+                    isLoading = false
+                    pageTitle = ""
+                }) {
+                    Icon(Icons.Rounded.ArrowBack, "بازگشت", tint = TextPrimary)
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        pageTitle.ifBlank { "در حال بارگذاری…" },
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        loadedUrl!!,
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp).padding(end = 8.dp),
+                        strokeWidth = 2.dp,
+                        color = PrimaryLight
+                    )
+                }
+            }
+
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
+                        settings.builtInZoomControls = true
+                        settings.displayZoomControls = false
+
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): Boolean {
+                                // Let downloads happen via system
+                                val url = request?.url?.toString() ?: return false
+                                if (url.contains("/download/")) {
+                                    // Trigger download via system download manager or just allow
+                                    return false
+                                }
+                                return false
+                            }
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                isLoading = false
+                                pageTitle = view?.title ?: "Bobbit Share"
+                            }
+                        }
+
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                isLoading = newProgress < 100
+                            }
+                        }
+
+                        setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+                            try {
+                                val request = android.app.DownloadManager.Request(Uri.parse(url))
+                                request.setMimeType(mimeType)
+                                val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
+                                request.setTitle(fileName)
+                                request.setDescription("در حال دانلود از Bobbit Share")
+                                request.setNotificationVisibility(
+                                    android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                                )
+                                request.setDestinationInExternalPublicDir(
+                                    android.os.Environment.DIRECTORY_DOWNLOADS, fileName
+                                )
+                                val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+                                dm.enqueue(request)
+                                Toast.makeText(ctx, "دانلود شروع شد: $fileName", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(ctx, "خطا در دانلود: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+
+                        loadUrl(loadedUrl!!)
+                    }
+                },
+                update = { webView ->
+                    if (webView.url != loadedUrl) {
+                        webView.loadUrl(loadedUrl!!)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Surface)
+            )
+        }
+    }
+}
+
 @Composable
 fun FileRow(file: FileItem, compact: Boolean) {
     Surface(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         color = Surface,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Rounded.InsertDriveFile,
-                contentDescription = null,
+                Icons.Rounded.InsertDriveFile, null,
                 tint = PrimaryLight,
-                modifier = Modifier.size(if (compact) 22.dp else 26.dp)
+                modifier = Modifier.size(if (compact) 20.dp else 24.dp)
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = file.name,
-                    color = TextPrimary,
+                    file.name, color = TextPrimary,
                     fontSize = if (compact) 13.sp else 14.sp,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = file.formattedSize(),
-                    color = TextSecondary,
-                    fontSize = 12.sp
-                )
+                Text(file.formattedSize(), color = TextSecondary, fontSize = 12.sp)
             }
         }
     }
