@@ -13,7 +13,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.OpenableColumns
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -28,10 +27,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.*
@@ -45,9 +47,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,6 +78,7 @@ class MainActivity : ComponentActivity() {
             serviceReadyCallback?.invoke()
             serviceReadyCallback = null
         }
+
         override fun onServiceDisconnected(name: ComponentName?) {
             shareService = null
             bound = false
@@ -83,7 +89,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
+                != PackageManager.PERMISSION_GRANTED
+            ) {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
             }
         }
@@ -91,7 +98,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             BobbitShareTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Background) {
-                    ShareScreen(
+                    AppRoot(
                         getService = { shareService },
                         ensureService = { onReady -> ensureServiceBound(onReady) }
                     )
@@ -102,13 +109,17 @@ class MainActivity : ComponentActivity() {
 
     private fun bindShareService() {
         val intent = Intent(this, ShareService::class.java)
-        try { ContextCompat.startForegroundService(this, intent) } catch (_: Exception) {}
+        try {
+            ContextCompat.startForegroundService(this, intent)
+        } catch (_: Exception) {
+        }
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
     private fun ensureServiceBound(onReady: () -> Unit) {
-        if (bound && shareService != null) onReady()
-        else {
+        if (bound && shareService != null) {
+            onReady()
+        } else {
             serviceReadyCallback = onReady
             bindShareService()
             Handler(Looper.getMainLooper()).postDelayed({
@@ -124,41 +135,31 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (bound) {
-            try { unbindService(connection) } catch (_: Exception) {}
+            try {
+                unbindService(connection)
+            } catch (_: Exception) {
+            }
             bound = false
         }
         super.onDestroy()
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ShareScreen(
+fun AppRoot(
     getService: () -> ShareService?,
     ensureService: (onReady: () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
-    val configuration = LocalConfiguration.current
-    val screenWidth = configuration.screenWidthDp.dp
-    val isCompact = screenWidth < 360.dp
-    val qrSize = if (screenWidth < 400.dp) 220.dp else 260.dp
-    val titleSize = if (isCompact) 26.sp else 32.sp
-    val horizontalPadding = if (isCompact) 16.dp else 24.dp
-
+    var selectedTab by remember { mutableStateOf(0) }
     var showExitDialog by remember { mutableStateOf(false) }
     var lastBackTime by remember { mutableStateOf(0L) }
-    var selectedFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
-    var isSharing by remember { mutableStateOf(false) }
-    var serverUrl by remember { mutableStateOf<String?>(null) }
-    var clientCount by remember { mutableStateOf(0) }
-    var isStarting by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     BackHandler {
         val now = System.currentTimeMillis()
-        if (now - lastBackTime < 2000) showExitDialog = true
-        else {
+        if (now - lastBackTime < 2000) {
+            showExitDialog = true
+        } else {
             lastBackTime = now
             Toast.makeText(context, "برای خروج دوباره دکمه بازگشت را بزنید", Toast.LENGTH_SHORT).show()
         }
@@ -182,6 +183,98 @@ fun ShareScreen(
         )
     }
 
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Background)
+            .statusBarsPadding()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp, bottom = 4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Bobbit Share",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = (-0.5).sp,
+                style = TextStyle(
+                    brush = Brush.linearGradient(listOf(GradientStart, GradientEnd))
+                )
+            )
+        }
+
+        Text(
+            text = "v1.1.0",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            textAlign = TextAlign.Center
+        )
+
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = Background,
+            contentColor = PrimaryLight
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("ارسال") },
+                icon = {
+                    Icon(
+                        Icons.Rounded.Share,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("دریافت") },
+                icon = {
+                    Icon(
+                        Icons.Rounded.Link,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            )
+        }
+
+        when (selectedTab) {
+            0 -> SendScreen(getService = getService, ensureService = ensureService)
+            1 -> ReceiveScreen()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SendScreen(
+    getService: () -> ShareService?,
+    ensureService: (onReady: () -> Unit) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val isCompact = screenWidth < 360.dp
+    val qrSize = if (screenWidth < 400.dp) 220.dp else 260.dp
+    val horizontalPadding = if (isCompact) 16.dp else 24.dp
+
+    var selectedFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
+    var isSharing by remember { mutableStateOf(false) }
+    var serverUrl by remember { mutableStateOf<String?>(null) }
+    var clientCount by remember { mutableStateOf(0) }
+    var isStarting by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
@@ -191,7 +284,8 @@ fun ShareScreen(
                     context.contentResolver.takePersistableUriPermission(
                         uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
                     )
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                }
                 var name = "file"
                 var size = 0L
                 try {
@@ -203,8 +297,13 @@ fun ShareScreen(
                             if (si >= 0) size = cursor.getLong(si)
                         }
                     }
-                } catch (_: Exception) {}
-                val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+                } catch (_: Exception) {
+                }
+                val mime = try {
+                    context.contentResolver.getType(uri)
+                } catch (_: Exception) {
+                    null
+                }
                 FileItem(uri, name, size, mime)
             }
             errorMessage = null
@@ -215,12 +314,20 @@ fun ShareScreen(
         while (true) {
             val service = getService()
             if (service != null) {
-                launch { service.isRunning.collectLatest { isSharing = it; if (it) isStarting = false } }
+                launch {
+                    service.isRunning.collectLatest {
+                        isSharing = it
+                        if (it) isStarting = false
+                    }
+                }
                 launch { service.serverUrl.collectLatest { serverUrl = it } }
                 launch { service.clientCount.collectLatest { clientCount = it } }
                 launch {
                     service.lastError.collectLatest { err ->
-                        if (err != null) { errorMessage = err; isStarting = false }
+                        if (err != null) {
+                            errorMessage = err
+                            isStarting = false
+                        }
                     }
                 }
                 break
@@ -260,36 +367,16 @@ fun ShareScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Background)
-            .statusBarsPadding()
             .navigationBarsPadding()
+            .padding(horizontal = horizontalPadding)
     ) {
-        Box(
-            modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Bobbit Share",
-                fontSize = titleSize,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = (-0.5).sp,
-                style = TextStyle(
-                    brush = Brush.linearGradient(listOf(GradientStart, GradientEnd))
-                )
-            )
-        }
-        Text(
-            text = "اشتراک‌گذاری سریع فایل  •  v1.0.2",
-            color = TextSecondary,
-            fontSize = 12.sp,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            textAlign = TextAlign.Center
-        )
         if (errorMessage != null) {
             Surface(
                 color = Error.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = horizontalPadding).padding(bottom = 12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
             ) {
                 Text(
                     text = errorMessage!!,
@@ -300,40 +387,46 @@ fun ShareScreen(
                 )
             }
         }
+
         AnimatedContent(
             targetState = isSharing,
             transitionSpec = {
                 fadeIn() + slideInVertically { it / 4 } togetherWith
                     fadeOut() + slideOutVertically { -it / 4 }
             },
-            label = "main"
+            label = "send"
         ) { sharing ->
             if (!sharing) {
-                Column(modifier = Modifier.fillMaxSize().padding(horizontal = horizontalPadding)) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Spacer(modifier = Modifier.height(12.dp))
                     Button(
                         onClick = { filePicker.launch(arrayOf("*/*")) },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Primary)
                     ) {
                         Icon(Icons.Rounded.FolderOpen, contentDescription = null)
-                        Spacer(Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text("انتخاب فایل‌ها", fontWeight = FontWeight.SemiBold)
                     }
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
                     if (selectedFiles.isEmpty()) {
                         Box(
-                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("هنوز فایلی انتخاب نشده", color = TextSecondary, fontSize = 15.sp)
+                            Text("فایلی انتخاب نشده", color = TextSecondary, fontSize = 14.sp)
                         }
                     } else {
                         Text(
                             "${selectedFiles.size} فایل انتخاب شده",
                             color = TextSecondary,
                             fontSize = 13.sp,
-                            modifier = Modifier.padding(bottom = 10.dp)
+                            modifier = Modifier.padding(bottom = 8.dp)
                         )
                         LazyColumn(
                             modifier = Modifier.weight(1f),
@@ -341,16 +434,20 @@ fun ShareScreen(
                         ) {
                             items(selectedFiles, key = { it.uri.toString() }) { file ->
                                 Surface(
-                                    shape = RoundedCornerShape(14.dp),
+                                    shape = RoundedCornerShape(12.dp),
                                     color = Surface,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(14.dp),
+                                        modifier = Modifier.padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Rounded.InsertDriveFile, null, tint = PrimaryLight)
-                                        Spacer(Modifier.width(12.dp))
+                                        Icon(
+                                            Icons.Rounded.InsertDriveFile,
+                                            contentDescription = null,
+                                            tint = PrimaryLight
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
                                                 file.name,
@@ -359,19 +456,25 @@ fun ShareScreen(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
-                                            Text(file.formattedSize(), color = TextSecondary, fontSize = 12.sp)
+                                            Text(
+                                                file.formattedSize(),
+                                                color = TextSecondary,
+                                                fontSize = 12.sp
+                                            )
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                     Button(
                         onClick = { startShare() },
                         enabled = selectedFiles.isNotEmpty() && !isStarting,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Secondary,
                             contentColor = Color.Black,
@@ -380,25 +483,26 @@ fun ShareScreen(
                     ) {
                         if (isStarting) {
                             CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
+                                modifier = Modifier.size(20.dp),
                                 color = Color.Black,
                                 strokeWidth = 2.dp
                             )
-                            Spacer(Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text("در حال راه‌اندازی…", fontWeight = FontWeight.Bold)
                         } else {
                             Icon(Icons.Rounded.Share, contentDescription = null)
-                            Spacer(Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text("شروع اشتراک‌گذاری", fontWeight = FontWeight.Bold)
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
             } else {
                 Column(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = horizontalPadding),
+                    modifier = Modifier.fillMaxSize(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         if (clientCount > 0) "$clientCount نفر متصل" else "در انتظار اتصال…",
                         color = Success,
@@ -410,9 +514,9 @@ fun ShareScreen(
                         Box(
                             modifier = Modifier
                                 .size(qrSize)
-                                .clip(RoundedCornerShape(20.dp))
+                                .clip(RoundedCornerShape(18.dp))
                                 .background(Color.White)
-                                .padding(12.dp)
+                                .padding(10.dp)
                         ) {
                             Image(
                                 bitmap = qrBitmap,
@@ -421,57 +525,202 @@ fun ShareScreen(
                                 contentScale = ContentScale.Fit
                             )
                         }
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             "QR را اسکن کنید یا آدرس را کپی کنید",
                             color = TextSecondary,
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(12.dp),
                             color = SurfaceVariant,
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                clipboard.setText(AnnotatedString(serverUrl!!))
-                                Toast.makeText(context, "آدرس کپی شد", Toast.LENGTH_SHORT).show()
-                            }
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboard.setText(AnnotatedString(serverUrl!!))
+                                    Toast.makeText(context, "آدرس کپی شد", Toast.LENGTH_SHORT).show()
+                                }
                         ) {
                             Row(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
                                     serverUrl!!,
                                     color = PrimaryLight,
-                                    fontSize = 14.sp,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
                                     modifier = Modifier.weight(1f),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Icon(
                                     Icons.Rounded.ContentCopy,
-                                    null,
+                                    contentDescription = "کپی",
                                     tint = TextSecondary,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
                     }
-                    Spacer(Modifier.weight(1f))
+                    Spacer(modifier = Modifier.weight(1f))
                     Button(
                         onClick = { getService()?.stopSharing() },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Error.copy(alpha = 0.9f))
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Error.copy(alpha = 0.9f)
+                        )
                     ) {
                         Icon(Icons.Rounded.Stop, contentDescription = null)
-                        Spacer(Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text("توقف اشتراک‌گذاری", fontWeight = FontWeight.Bold)
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ReceiveScreen() {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
+    val configuration = LocalConfiguration.current
+    val horizontalPadding = if (configuration.screenWidthDp < 360) 16.dp else 24.dp
+
+    var urlInput by remember { mutableStateOf("") }
+
+    fun normalizeUrl(raw: String): String {
+        var u = raw.trim()
+        if (u.isEmpty()) return u
+        if (!u.startsWith("http://") && !u.startsWith("https://")) {
+            u = "http://$u"
+        }
+        return u
+    }
+
+    fun connect() {
+        val normalized = normalizeUrl(urlInput)
+        if (normalized.isEmpty()) {
+            Toast.makeText(context, "آدرس را وارد کنید", Toast.LENGTH_SHORT).show()
+            return
+        }
+        focusManager.clearFocus()
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(normalized))
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(context, "نتوانست مرورگر را باز کند", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(horizontal = horizontalPadding)
+    ) {
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            "به دستگاه مقابل وصل شوید",
+            color = TextPrimary,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        Text(
+            "آدرس گوشی فرستنده را وارد کنید\n(مثلاً 192.168.1.42:8080)",
+            color = TextSecondary,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(bottom = 16.dp),
+            lineHeight = 18.sp
+        )
+
+        OutlinedTextField(
+            value = urlInput,
+            onValueChange = { urlInput = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("192.168.1.42:8080", color = TextSecondary) },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Primary,
+                unfocusedBorderColor = SurfaceVariant,
+                focusedContainerColor = Surface,
+                unfocusedContainerColor = Surface,
+                cursorColor = PrimaryLight,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary
+            ),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Go
+            ),
+            keyboardActions = KeyboardActions(onGo = { connect() }),
+            leadingIcon = {
+                Icon(Icons.Rounded.Link, contentDescription = null, tint = TextSecondary)
+            }
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        TextButton(
+            onClick = {
+                val text = clipboard.getText()?.text?.trim()
+                if (!text.isNullOrEmpty()) {
+                    urlInput = text
+                    Toast.makeText(context, "از کلیپ‌بورد جایگذاری شد", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "کلیپ‌بورد خالی است", Toast.LENGTH_SHORT).show()
+                }
+            },
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Icon(
+                Icons.Rounded.ContentCopy,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("جایگذاری")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Button(
+            onClick = { connect() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Secondary,
+                contentColor = Color.Black
+            )
+        ) {
+            Icon(Icons.Rounded.Link, contentDescription = null)
+            Spacer(modifier = Modifier.width(10.dp))
+            Text("باز کردن در مرورگر", fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Text(
+            "هر دو دستگاه باید به یک وای‌فای وصل باشند.\nصفحه دانلود در مرورگر باز می‌شود.\n\nبرای ارسال دو طرفه: هر دو دستگاه می‌توانند در تب ارسال فایل بگذارند و QR بسازند؛ طرف مقابل از تب دریافت وصل می‌شود.",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            lineHeight = 18.sp
+        )
     }
 }
