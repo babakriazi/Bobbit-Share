@@ -279,7 +279,7 @@ fun ShareScreen(
             )
         }
         Text(
-            text = "اشتراک‌گذاری سریع فایل  •  v1.1.2",
+            text = "اشتراک‌گذاری سریع فایل  •  v1.0.2",
             color = TextSecondary,
             fontSize = 12.sp,
             modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
@@ -322,19 +322,43 @@ fun ShareScreen(
                     }
                     Spacer(Modifier.height(20.dp))
                     if (selectedFiles.isEmpty()) {
-                        Box(Modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Text("هنوز فایلی انتخاب نشده", color = TextSecondary, fontSize = 15.sp)
                         }
                     } else {
-                        Text("${selectedFiles.size} فایل انتخاب شده", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(bottom = 10.dp))
-                        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "${selectedFiles.size} فایل انتخاب شده",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(bottom = 10.dp)
+                        )
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             items(selectedFiles, key = { it.uri.toString() }) { file ->
-                                Surface(shape = RoundedCornerShape(14.dp), color = Surface, modifier = Modifier.fillMaxWidth()) {
-                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = Surface,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         Icon(Icons.Rounded.InsertDriveFile, null, tint = PrimaryLight)
                                         Spacer(Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(file.name, color = TextPrimary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(
+                                                file.name,
+                                                color = TextPrimary,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                             Text(file.formattedSize(), color = TextSecondary, fontSize = 12.sp)
                                         }
                                     }
@@ -348,10 +372,18 @@ fun ShareScreen(
                         enabled = selectedFiles.isNotEmpty() && !isStarting,
                         modifier = Modifier.fillMaxWidth().height(56.dp),
                         shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Secondary, contentColor = Color.Black, disabledContainerColor = SurfaceVariant)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Secondary,
+                            contentColor = Color.Black,
+                            disabledContainerColor = SurfaceVariant
+                        )
                     ) {
                         if (isStarting) {
-                            CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.Black, strokeWidth = 2.dp)
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = Color.Black,
+                                strokeWidth = 2.dp
+                            )
                             Spacer(Modifier.width(10.dp))
                             Text("در حال راه‌اندازی…", fontWeight = FontWeight.Bold)
                         } else {
@@ -360,7 +392,7 @@ fun ShareScreen(
                             Text("شروع اشتراک‌گذاری", fontWeight = FontWeight.Bold)
                         }
                     }
-                    Spacer(modifier.height(12.dp))
+                    Spacer(Modifier.height(12.dp))
                 }
             } else {
                 Column(
@@ -376,12 +408,26 @@ fun ShareScreen(
                     if (serverUrl != null) {
                         val qrBitmap = rememberQrImageBitmap(serverUrl!!, 512)
                         Box(
-                            modifier = Modifier.size(qrSize).clip(RoundedCornerShape(20.dp)).background(Color.White).padding(12.dp)
+                            modifier = Modifier
+                                .size(qrSize)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(Color.White)
+                                .padding(12.dp)
                         ) {
-                            Image(qrBitmap, "QR", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                            Image(
+                                bitmap = qrBitmap,
+                                contentDescription = "QR",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit
+                            )
                         }
                         Spacer(Modifier.height(16.dp))
-                        Text("QR را اسکن کنید یا آدرس را کپی کنید", color = TextSecondary, fontSize = 13.sp, textAlign = TextAlign.Center)
+                        Text(
+                            "QR را اسکن کنید یا آدرس را کپی کنید",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
                         Spacer(Modifier.height(12.dp))
                         Surface(
                             shape = RoundedCornerShape(14.dp),
@@ -391,9 +437,24 @@ fun ShareScreen(
                                 Toast.makeText(context, "آدرس کپی شد", Toast.LENGTH_SHORT).show()
                             }
                         ) {
-                            Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(serverUrl!!, color = PrimaryLight, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Icon(Icons.Rounded.ContentCopy, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    serverUrl!!,
+                                    color = PrimaryLight,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Icon(
+                                    Icons.Rounded.ContentCopy,
+                                    null,
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                         }
                     }
