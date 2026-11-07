@@ -51,6 +51,7 @@ import com.babakriazi.bobbitshare.ui.rememberQrImageBitmap
 import com.babakriazi.bobbitshare.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -86,7 +87,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Pre-bind the service
         bindShareService()
 
         setContent {
@@ -106,7 +106,6 @@ class MainActivity : ComponentActivity() {
 
     private fun bindShareService() {
         val intent = Intent(this, ShareService::class.java)
-        // Start as foreground-capable service first so it survives
         try {
             ContextCompat.startForegroundService(this, intent)
         } catch (e: Exception) {
@@ -121,7 +120,6 @@ class MainActivity : ComponentActivity() {
         } else {
             serviceReadyCallback = onReady
             bindShareService()
-            // Fallback timeout
             Handler(Looper.getMainLooper()).postDelayed({
                 if (shareService != null) {
                     serviceReadyCallback?.invoke()
@@ -173,7 +171,6 @@ fun ShareScreen(
     var isStarting by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // File picker
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
@@ -185,7 +182,6 @@ fun ShareScreen(
                         Intent.FLAG_GRANT_READ_URI_PERMISSION
                     )
                 } catch (_: SecurityException) {
-                    // Some providers don't support persistable permission – still usable in this session
                 } catch (_: Exception) {}
 
                 var name = "file"
@@ -209,12 +205,10 @@ fun ShareScreen(
         }
     }
 
-    // Continuously observe service state when available
     LaunchedEffect(Unit) {
         while (true) {
             val service = getService()
             if (service != null) {
-                // Collect all flows
                 launch {
                     service.isRunning.collectLatest { running ->
                         isSharing = running
@@ -222,14 +216,10 @@ fun ShareScreen(
                     }
                 }
                 launch {
-                    service.serverUrl.collectLatest { url ->
-                        serverUrl = url
-                    }
+                    service.serverUrl.collectLatest { url -> serverUrl = url }
                 }
                 launch {
-                    service.clientCount.collectLatest { count ->
-                        clientCount = count
-                    }
+                    service.clientCount.collectLatest { count -> clientCount = count }
                 }
                 launch {
                     service.lastError.collectLatest { err ->
@@ -239,7 +229,7 @@ fun ShareScreen(
                         }
                     }
                 }
-                break // once we have service, stay collecting
+                break
             }
             delay(300)
         }
@@ -278,7 +268,6 @@ fun ShareScreen(
                 errorMessage = err
                 Toast.makeText(context, err, Toast.LENGTH_LONG).show()
             }
-            // If started successfully, isSharing will become true via the flow
         }
     }
 
@@ -289,7 +278,6 @@ fun ShareScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // Header
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -302,9 +290,7 @@ fun ShareScreen(
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = (-0.5).sp,
                 style = LocalTextStyle.current.copy(
-                    brush = Brush.linearGradient(
-                        colors = listOf(GradientStart, GradientEnd)
-                    )
+                    brush = Brush.linearGradient(colors = listOf(GradientStart, GradientEnd))
                 )
             )
         }
@@ -313,13 +299,10 @@ fun ShareScreen(
             text = "اشتراک‌گذاری سریع فایل در شبکه محلی  •  v1.0.1",
             color = TextSecondary,
             fontSize = 12.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
             textAlign = TextAlign.Center
         )
 
-        // Error banner
         if (errorMessage != null) {
             Surface(
                 color = Error.copy(alpha = 0.15f),
@@ -348,7 +331,6 @@ fun ShareScreen(
             label = "main_content"
         ) { sharing ->
             if (!sharing) {
-                // Selection Mode
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -356,9 +338,7 @@ fun ShareScreen(
                 ) {
                     Button(
                         onClick = { filePicker.launch(arrayOf("*/*")) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Primary)
                     ) {
@@ -371,9 +351,7 @@ fun ShareScreen(
 
                     if (selectedFiles.isEmpty()) {
                         Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
+                            modifier = Modifier.fillMaxWidth().weight(1f),
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -410,9 +388,7 @@ fun ShareScreen(
                     Button(
                         onClick = { startShare() },
                         enabled = selectedFiles.isNotEmpty() && !isStarting,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Secondary,
@@ -437,7 +413,6 @@ fun ShareScreen(
                     Spacer(Modifier.height(12.dp))
                 }
             } else {
-                // Sharing Mode
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -546,9 +521,7 @@ fun ShareScreen(
 
                     Button(
                         onClick = { getService()?.stopSharing() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Error.copy(alpha = 0.9f)
